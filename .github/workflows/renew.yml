@@ -41,15 +41,22 @@ jobs:
       - name: 🐍 安装 Python 依赖
         run: pip install seleniumbase requests
 
-      - name: 🛡️ 启动 Xray 代理转发 (解析 vmess 原生住宅节点)
+      - name: 🛡️ 启动 Xray 代理转发 (变量动态注入版)
+        env:
+          # 在这里统一管理你的 VMess 节点变量（也可以移到 GitHub Secrets 中）
+          VMESS_ADD: "saas.sin.fan"
+          VMESS_PORT: 443
+          VMESS_ID: "42e35455-abdb-4b51-830e-7a4e24e50a81"
+          VMESS_HOST: "ministrator.koko.xx.kg"
+          VMESS_PATH: "/vmess-argo?ed=2560"
         run: |
           # 1. 下载并解压 Xray 核心
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip -q xray.zip
           chmod +x xray
           
-          # 2. 生成匹配你法国住宅节点的专用 config.json
-          cat << 'EOF' > config.json
+          # 2. 通过环境变量动态生成 config.json
+          cat << EOF > config.json
           {
             "inbounds": [{
               "port": 10809,
@@ -60,10 +67,10 @@ jobs:
               "protocol": "vmess",
               "settings": {
                 "vnext": [{
-                  "address": "saas.sin.fan",
-                  "port": 443,
+                  "address": "${VMESS_ADD}",
+                  "port": ${VMESS_PORT},
                   "users": [{
-                    "id": "42e35455-abdb-4b51-830e-7a4e24e50a81",
+                    "id": "${VMESS_ID}",
                     "alterId": 0,
                     "security": "none"
                   }]
@@ -73,13 +80,13 @@ jobs:
                 "network": "ws",
                 "security": "tls",
                 "tlsSettings": {
-                  "serverName": "ministrator.koko.xx.kg",
+                  "serverName": "${VMESS_HOST}",
                   "allowInsecure": false
                 },
                 "wsSettings": {
-                  "path": "/vmess-argo?ed=2560",
+                  "path": "${VMESS_PATH}",
                   "headers": {
-                    "Host": "ministrator.koko.xx.kg"
+                    "Host": "${VMESS_HOST}"
                   }
                 }
               }
@@ -87,11 +94,11 @@ jobs:
           }
           EOF
           
-          # 3. 后台静默启动 Xray 并留出建连时间
+          # 3. 后台静默启动 Xray
           nohup ./xray -config config.json > xray.log 2>&1 &
           sleep 4
           
-          # 4. 测试住宅 IP 的本地通道连通性
+          # 4. 测试连通性
           echo "✅ Xray 代理已在本地 10809 端口启动，正在测试出口 IP..."
           curl -s -x http://127.0.0.1:10809 https://api.ipify.org || echo "⚠️ 连通测试失败，请检查节点可用性"
 
