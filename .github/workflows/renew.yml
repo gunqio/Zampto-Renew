@@ -131,14 +131,8 @@ jobs:
           ZAMPTO_PASS: ${{ secrets.ZAMPTO_PASS }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
-          # 💡 这里保持完全干净，不定义任何代理变量，彻底规避 GitHub 语法检测冲突
         run: |
-          # 在 Bash 执行命令时直接强行单行注入环境变量，不经过 YAML 的 Linter 检查
-          export HTTP_PROXY=http://127.0.0.1:10809
-          export http_proxy=http://127.0.0.1:10809
-          export NO_PROXY=localhost,127.0.0.1,::1
-          export no_proxy=localhost,127.0.0.1,::1
-          
+          # 💡 此时全局无任何全局代理干扰，规避所有语法及通信 Bug，交由 Python 内部走 10809
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
