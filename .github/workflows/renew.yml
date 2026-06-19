@@ -43,21 +43,22 @@ jobs:
 
       - name: 🛡️ 启动 Xray 代理转发 (链接/JSON 智能全自动解析)
         env:
-          RAW_VMESS_DATA: ${{ secrets.VMESS_LINK }}
+          # 💡 这里完全与你 GitHub Secrets 里的变量名保持一致
+          VMESS_LINK: ${{ secrets.VMESS_LINK }}
         run: |
-          if [ -z "${RAW_VMESS_DATA}" ]; then
+          if [ -z "${VMESS_LINK}" ]; then
             echo "❌ 错误：GitHub Secrets 中缺少 VMESS_LINK 配置！"
             exit 1
           fi
 
           # 1. 智能判定是 vmess:// 还是原生 JSON
-          if [[ "${RAW_VMESS_DATA}" == vmess://* ]]; then
+          if [[ "${VMESS_LINK}" == vmess://* ]]; then
             echo "🔮 检测到 vmess:// 协议链接，开始进行 Base64 解码..."
-            CLEAN_B64=$(echo "${RAW_VMESS_DATA}" | sed 's/vmess:\/\///' | tr -d '\r\n ')
+            CLEAN_B64=$(echo "${VMESS_LINK}" | sed 's/vmess:\/\///' | tr -d '\r\n ')
             JSON_STR=$(echo "${CLEAN_B64}" | base64 -d 2>/dev/null || echo "${CLEAN_B64}=" | base64 -d 2>/dev/null || echo "${CLEAN_B64}==" | base64 -d 2>/dev/null)
           else
             echo "📄 检测到原生 JSON 文本，直接提取参数..."
-            JSON_STR="${RAW_VMESS_DATA}"
+            JSON_STR="${VMESS_LINK}"
           fi
 
           # 验证 JSON 解析是否合法
@@ -132,8 +133,9 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
           HTTP_PROXY: http://127.0.0.1:10809
+          NO_PROXY: localhost,127.0.0.1,::1
+          no_proxy: localhost,127.0.0.1,::1
         run: |
-          # 在执行阶段同时导出大小写代理，规避 YAML 文件的同名检查限制
           export http_proxy=http://127.0.0.1:10809
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
