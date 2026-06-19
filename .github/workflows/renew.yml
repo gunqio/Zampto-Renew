@@ -33,29 +33,52 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: 🛠️ 安装系统依赖
+      - name: 🛠️ 安装系统依赖并准备 jq 工具
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y xvfb xdotool unzip
+          sudo apt-get install -y xvfb xdotool unzip jq
 
       - name: 🐍 安装 Python 依赖
         run: pip install seleniumbase requests
 
-      - name: 🛡️ 启动 Xray 代理转发 (变量动态注入版)
+      - name: 🛡️ 启动 Xray 代理转发 (链接/JSON 智能全自动解析)
         env:
-          # 在这里统一管理你的 VMess 节点变量（也可以移到 GitHub Secrets 中）
-          VMESS_ADD: "saas.sin.fan"
-          VMESS_PORT: 443
-          VMESS_ID: "42e35455-abdb-4b51-830e-7a4e24e50a81"
-          VMESS_HOST: "ministrator.koko.xx.kg"
-          VMESS_PATH: "/vmess-argo?ed=2560"
+          # 只需在 GitHub Secrets 里创建 VMESS_LINK，把整个 vmess://... 或 JSON 贴进去
+          RAW_VMESS_DATA: ${{ secrets.VMESS_LINK }}
         run: |
-          # 1. 下载并解压 Xray 核心
+          if [ -z "${RAW_VMESS_DATA}" ]; then
+            echo "❌ 错误：GitHub Secrets 中缺少 VMESS_LINK 配置！"
+            exit 1
+          fi
+
+          # 1. 智能判定是 vmess:// 还是原生 JSON
+          if [[ "${RAW_VMESS_DATA}" == vmess://* ]]; then
+            echo "🔮 检测到 vmess:// 协议链接，开始进行 Base64 解码..."
+            CLEAN_B64=$(echo "${RAW_VMESS_DATA}" | sed 's/vmess:\/\///' | tr -d '\r\n ')
+            JSON_STR=$(echo "${CLEAN_B64}" | base64 -d 2>/dev/null || echo "${CLEAN_B64}=" | base64 -d 2>/dev/null || echo "${CLEAN_B64}==" | base64 -d 2>/dev/null)
+          else
+            echo "📄 检测到原生 JSON 文本，直接提取参数..."
+            JSON_STR="${RAW_VMESS_DATA}"
+          fi
+
+          # 验证 JSON 解析是否合法
+          if ! echo "${JSON_STR}" | jq . >/dev/null 2>&1; then
+            echo "❌ 错误：节点数据解码失败或 JSON 格式不合法！"
+            exit 1
+          fi
+
+          # 2. 提取 Xray 所需的核心变量
+          V_ADD=$(echo "${JSON_STR}" | jq -r '.add')
+          V_PORT=$(echo "${JSON_STR}" | jq -r '.port')
+          V_ID=$(echo "${JSON_STR}" | jq -r '.id')
+          V_HOST=$(echo "${JSON_STR}" | jq -r '.host // .sni')
+          V_PATH=$(echo "${JSON_STR}" | jq -r '.path')
+
+          # 3. 下载并解压 Xray 核心
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q xray.zip
-          chmod +x xray
+          unzip -q xray.zip && chmod +x xray
           
-          # 2. 通过环境变量动态生成 config.json
+          # 4. 生成 Xray 标准 config.json
           cat << EOF > config.json
           {
             "inbounds": [{
@@ -67,10 +90,10 @@ jobs:
               "protocol": "vmess",
               "settings": {
                 "vnext": [{
-                  "address": "${VMESS_ADD}",
-                  "port": ${VMESS_PORT},
+                  "address": "${V_ADD}",
+                  "port": ${V_PORT:-443},
                   "users": [{
-                    "id": "${VMESS_ID}",
+                    "id": "${V_ID}",
                     "alterId": 0,
                     "security": "none"
                   }]
@@ -80,13 +103,13 @@ jobs:
                 "network": "ws",
                 "security": "tls",
                 "tlsSettings": {
-                  "serverName": "${VMESS_HOST}",
+                  "serverName": "${V_HOST}",
                   "allowInsecure": false
                 },
                 "wsSettings": {
-                  "path": "${VMESS_PATH}",
+                  "path": "${V_PATH}",
                   "headers": {
-                    "Host": "${VMESS_HOST}"
+                    "Host": "${V_HOST}"
                   }
                 }
               }
@@ -94,13 +117,13 @@ jobs:
           }
           EOF
           
-          # 3. 后台静默启动 Xray
+          # 5. 后台静默启动 Xray
           nohup ./xray -config config.json > xray.log 2>&1 &
           sleep 4
           
-          # 4. 测试连通性
+          # 6. 测试连通性
           echo "✅ Xray 代理已在本地 10809 端口启动，正在测试出口 IP..."
-          curl -s -x http://127.0.0.1:10809 https://api.ipify.org || echo "⚠️ 连通测试失败，请检查节点可用性"
+          curl -s -x http://127.0.0.1:10809 https://api.ipify.org || echo "⚠️ 连通测试失败，请确认节点是否有效"
 
       - name: 🚀 运行续期脚本
         env:
