@@ -14,7 +14,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/Zampto-Renew-Private
+          repository: gunqio/zhiyong          # 你的私有仓库
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
