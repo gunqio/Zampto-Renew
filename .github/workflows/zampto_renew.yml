@@ -14,7 +14,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: gunqio/zhiyong          # 你的私有仓库
+          repository: gunqio/zhiyong
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
@@ -35,201 +35,169 @@ jobs:
             x11-utils \
             scrot \
             xdotool \
-            jq
+            jq \
+            wget \
+            unzip
 
       - name: 🐍 安装 Python 依赖
         run: |
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      # ---------- 新增：Xray 代理转发 ----------
-      - name: 🚀 启动 Xray 代理转发（链接/JSON 全自动解析）
+      # ---------- 替换后的代理启动步骤 ----------
+      - name: 🚀 启动 Xray 代理（链接/JSON 全自动解析）
         if: ${{ env.PROXY_LINK != '' }}
         env:
-          PROXY_LINK: ${{ secrets.PROXY_LINK }}   # 可以是 vmess://... 或 完整JSON
+          PROXY_LINK: ${{ secrets.PROXY_LINK }}
         run: |
+          set -e
+
           # 1. 下载 Xray
-          XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-            | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-          echo "📦 Xray 版本: $XRAY_VERSION"
-          wget -q "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip"
+          LATEST=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+          echo "📦 Xray 版本: $LATEST"
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/v${LATEST}/Xray-linux-64.zip"
           unzip -q Xray-linux-64.zip
           chmod +x xray
 
-          # 2. 生成 config.json
+          # 2. 生成基础 config.json（入站 http 代理 + 出站占位）
           cat > config.json << 'EOF'
           {
             "log": { "loglevel": "warning" },
             "inbounds": [
-              {
-                "port": 8080,
-                "protocol": "http",
-                "settings": {}
-              }
+              { "port": 8080, "protocol": "http", "settings": {} }
             ],
-            "outbounds": [
-              {
-                "protocol": "proxy",
-                "settings": {}
-              }
-            ]
+            "outbounds": [ { "protocol": "proxy", "settings": {} } ]
           }
           EOF
 
-          # 3. 智能解析 PROXY_LINK
-          python3 - << 'PYTHON_SCRIPT'
-          import os, json, base64, re, sys
+          # 3. 解析 PROXY_LINK
+          if echo "$PROXY_LINK" | grep -q '^vmess://'; then
+            echo "🔮 解析 vmess:// 链接"
+            B64=$(echo "$PROXY_LINK" | sed 's/^vmess:\/\///' | tr -d '\n')
+            while [ $((${#B64} % 4)) -ne 0 ]; do B64="${B64}="; done
+            JSON=$(echo "$B64" | base64 -d 2>/dev/null || echo '{}')
+            ADD=$(echo "$JSON" | jq -r '.add // ""')
+            PORT=$(echo "$JSON" | jq -r '.port // "443"')
+            ID=$(echo "$JSON" | jq -r '.id // ""')
+            AID=$(echo "$JSON" | jq -r '.aid // "0"')
+            NET=$(echo "$JSON" | jq -r '.net // "tcp"')
+            TLS=$(echo "$JSON" | jq -r '.tls // ""')
+            PATH=$(echo "$JSON" | jq -r '.path // "/"')
+            HOST=$(echo "$JSON" | jq -r '.host // ""')
+            cat > outbound.json << EOF
+            {
+              "protocol": "vmess",
+              "settings": {
+                "vnext": [{
+                  "address": "$ADD",
+                  "port": $PORT,
+                  "users": [{
+                    "id": "$ID",
+                    "alterId": $AID,
+                    "security": "auto"
+                  }]
+                }]
+              },
+              "streamSettings": {
+                "network": "$NET",
+                "security": "$TLS",
+                "tlsSettings": $( [ "$TLS" == "tls" ] && echo '{"allowInsecure": true}' || echo '{}' ),
+                "wsSettings": $( [ "$NET" == "ws" ] && echo "{\"path\":\"$PATH\",\"headers\":{\"Host\":\"$HOST\"}}" || echo '{}' )
+              }
+            }
+            EOF
 
-          link = os.getenv("PROXY_LINK", "").strip()
-          if not link:
-              sys.exit(0)
+          elif echo "$PROXY_LINK" | grep -q '^vless://'; then
+            echo "🔮 解析 vless:// 链接"
+            python3 << 'PY'
+            import os, sys, json, urllib.parse
+            link = os.getenv("PROXY_LINK")
+            if not link: sys.exit(0)
+            u = urllib.parse.urlparse(link)
+            params = dict(urllib.parse.parse_qsl(u.query))
+            out = {
+              "protocol": "vless",
+              "settings": {
+                "vnext": [{
+                  "address": u.hostname,
+                  "port": u.port or 443,
+                  "users": [{
+                    "id": u.username,
+                    "encryption": params.get("encryption", "none"),
+                    "flow": params.get("flow", "")
+                  }]
+                }]
+              },
+              "streamSettings": {
+                "network": params.get("type", "tcp"),
+                "security": params.get("security", ""),
+                "tlsSettings": {"allowInsecure": True} if params.get("security") == "tls" else {},
+                "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {}
+              }
+            }
+            with open("outbound.json", "w") as f:
+                json.dump(out, f, indent=2)
+            PY
 
-          # 判断是否为完整 JSON（以 { 开头）
-          if link.startswith("{"):
-              try:
-                  cfg = json.loads(link)
-                  # 用户提供的完整 Xray 配置，直接覆盖
-                  with open("config.json", "w") as f:
-                      json.dump(cfg, f, indent=2)
-                  print("✅ 使用用户提供的完整 JSON 配置")
-                  sys.exit(0)
-              except:
-                  pass
+          elif echo "$PROXY_LINK" | grep -q '^trojan://'; then
+            echo "🔮 解析 trojan:// 链接"
+            python3 << 'PY'
+            import os, sys, json, urllib.parse
+            link = os.getenv("PROXY_LINK")
+            if not link: sys.exit(0)
+            u = urllib.parse.urlparse(link)
+            params = dict(urllib.parse.parse_qsl(u.query))
+            out = {
+              "protocol": "trojan",
+              "settings": {
+                "servers": [{
+                  "address": u.hostname,
+                  "port": u.port or 443,
+                  "password": u.username,
+                  "flow": params.get("flow", "")
+                }]
+              },
+              "streamSettings": {
+                "network": params.get("type", "tcp"),
+                "security": params.get("security", "tls"),
+                "tlsSettings": {"allowInsecure": True} if params.get("allowInsecure") == "1" else {},
+                "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {}
+              }
+            }
+            with open("outbound.json", "w") as f:
+                json.dump(out, f, indent=2)
+            PY
 
-          # 解析 vmess:// 链接 (Base64 JSON)
-          if link.startswith("vmess://"):
-              try:
-                  b64 = link[8:]  # 去掉 vmess://
-                  # 补齐 padding
-                  b64 += "=" * (4 - len(b64) % 4) if len(b64) % 4 else ""
-                  decoded = base64.b64decode(b64).decode('utf-8')
-                  data = json.loads(decoded)
-                  # 构建 Xray 出站配置
-                  outbound = {
-                      "protocol": "vmess",
-                      "settings": {
-                          "vnext": [{
-                              "address": data.get("add", ""),
-                              "port": int(data.get("port", 443)),
-                              "users": [{
-                                  "id": data.get("id", ""),
-                                  "alterId": int(data.get("aid", 0)),
-                                  "security": data.get("scy", "auto") or "auto"
-                              }]
-                          }]
-                      },
-                      "streamSettings": {
-                          "network": data.get("net", "tcp"),
-                          "security": data.get("tls", ""),
-                          "tlsSettings": {} if data.get("tls") != "tls" else {"allowInsecure": True},
-                          "wsSettings": {"path": data.get("path", "/")} if data.get("net") == "ws" else {},
-                          "httpSettings": {"path": data.get("path", "/")} if data.get("net") == "http" else {},
-                          "quicSettings": {"security": data.get("quicSecurity", ""), "key": data.get("key", "")} if data.get("net") == "quic" else {},
-                          "grpcSettings": {"serviceName": data.get("path", "")} if data.get("net") == "grpc" else {}
-                      }
-                  }
-                  # 读取模板配置
-                  with open("config.json", "r") as f:
-                      cfg = json.load(f)
-                  cfg["outbounds"] = [outbound]
-                  with open("config.json", "w") as f:
-                      json.dump(cfg, f, indent=2)
-                  print("✅ vmess:// 链接解析成功")
-                  sys.exit(0)
-              except Exception as e:
-                  print(f"⚠️ vmess 解析失败: {e}")
+          elif echo "$PROXY_LINK" | grep -q '^{'; then
+            echo "📄 检测到 JSON 配置，直接覆盖"
+            echo "$PROXY_LINK" > config.json
+            touch outbound.json
+          else
+            echo "❌ 无法识别的代理格式"
+            exit 1
+          fi
 
-          # 解析 vless:// 链接 (URI)
-          if link.startswith("vless://"):
-              try:
-                  import urllib.parse
-                  url = urllib.parse.urlparse(link)
-                  params = dict(urllib.parse.parse_qsl(url.query))
-                  outbound = {
-                      "protocol": "vless",
-                      "settings": {
-                          "vnext": [{
-                              "address": url.hostname,
-                              "port": url.port or 443,
-                              "users": [{
-                                  "id": url.username,
-                                  "encryption": params.get("encryption", "none"),
-                                  "flow": params.get("flow", "")
-                              }]
-                          }]
-                      },
-                      "streamSettings": {
-                          "network": params.get("type", "tcp"),
-                          "security": params.get("security", ""),
-                          "tlsSettings": {"allowInsecure": True} if params.get("security") == "tls" else {},
-                          "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {},
-                          "httpSettings": {"path": params.get("path", "/")} if params.get("type") == "http" else {},
-                          "grpcSettings": {"serviceName": params.get("serviceName", "")} if params.get("type") == "grpc" else {}
-                      }
-                  }
-                  with open("config.json", "r") as f:
-                      cfg = json.load(f)
-                  cfg["outbounds"] = [outbound]
-                  with open("config.json", "w") as f:
-                      json.dump(cfg, f, indent=2)
-                  print("✅ vless:// 链接解析成功")
-                  sys.exit(0)
-              except Exception as e:
-                  print(f"⚠️ vless 解析失败: {e}")
-
-          # 解析 trojan:// 链接
-          if link.startswith("trojan://"):
-              try:
-                  import urllib.parse
-                  url = urllib.parse.urlparse(link)
-                  params = dict(urllib.parse.parse_qsl(url.query))
-                  outbound = {
-                      "protocol": "trojan",
-                      "settings": {
-                          "servers": [{
-                              "address": url.hostname,
-                              "port": url.port or 443,
-                              "password": url.username,
-                              "flow": params.get("flow", "")
-                          }]
-                      },
-                      "streamSettings": {
-                          "network": params.get("type", "tcp"),
-                          "security": params.get("security", "tls"),
-                          "tlsSettings": {"allowInsecure": True} if params.get("allowInsecure") == "1" else {},
-                          "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {},
-                          "grpcSettings": {"serviceName": params.get("serviceName", "")} if params.get("type") == "grpc" else {}
-                      }
-                  }
-                  with open("config.json", "r") as f:
-                      cfg = json.load(f)
-                  cfg["outbounds"] = [outbound]
-                  with open("config.json", "w") as f:
-                      json.dump(cfg, f, indent=2)
-                  print("✅ trojan:// 链接解析成功")
-                  sys.exit(0)
-              except Exception as e:
-                  print(f"⚠️ trojan 解析失败: {e}")
-
-          print("❌ 无法识别的代理格式，请检查 PROXY_LINK")
-          sys.exit(1)
-          PYTHON_SCRIPT
+          # 如果生成了 outbound.json，则合并到 config.json
+          if [ -f outbound.json ]; then
+            jq --slurpfile out outbound.json \
+               '.inbounds = [{"port":8080,"protocol":"http","settings":{}}] | .outbounds = $out[0]' \
+               config.json > config.tmp && mv config.tmp config.json
+          fi
 
           # 4. 启动 Xray
           nohup ./xray -c config.json > xray.log 2>&1 &
           sleep 3
 
-          # 5. 测试代理出口 IP
-          IP=$(curl -s -x http://127.0.0.1:8080 https://api.ipify.org)
-          IP_MASKED=$(echo "$IP" | sed 's/\([0-9]*\.[0-9]*\.[0-9]*\.\)[0-9]*/\1xx/')
-          echo "✅ Xray 已启动，出口IP：$IP_MASKED"
-        # ---------- Xray 步骤结束 ----------
+          # 5. 测试代理
+          IP=$(curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "未知")
+          echo "✅ Xray 已启动，出口IP：$IP"
 
+      # ---------- 后续步骤保持不变 ----------
       - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
           ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
-          # 注意：脚本内代理固定使用 127.0.0.1:8080，无需再传代理变量
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
