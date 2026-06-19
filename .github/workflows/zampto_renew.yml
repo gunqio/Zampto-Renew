@@ -44,7 +44,7 @@ jobs:
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      # ---------- 代理启动步骤（修复版） ----------
+      # ---------- 代理启动步骤（优化版） ----------
       - name: 🚀 启动 Xray 代理（链接/JSON 全自动解析）
         if: ${{ env.PROXY_LINK != '' }}
         env:
@@ -194,15 +194,27 @@ jobs:
               json.dump(config, f, indent=2)
           PYTHON
 
-          # 3. 启动 Xray
+          # 3. 显示生成的 config.json（脱敏）
+          echo "📄 生成的 config.json (脱敏):"
+          cat config.json | sed 's/"id": "[^"]*"/"id": "***"/g' | sed 's/"password": "[^"]*"/"password": "***"/g'
+
+          # 4. 启动 Xray
           nohup ./xray -c config.json > xray.log 2>&1 &
-          sleep 3
+          sleep 5
 
-          # 4. 测试代理
-          IP=$(curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "未知")
+          # 5. 输出 Xray 日志（前10行）
+          echo "📋 Xray 启动日志 (前10行):"
+          head -n 10 xray.log || echo "日志为空"
+
+          # 6. 测试代理连通性
+          echo "🌐 测试代理连通性..."
+          IP=$(curl -s -x http://127.0.0.1:8080 https://api.ipify.org || curl -s -x http://127.0.0.1:8080 http://httpbin.org/ip | jq -r '.origin' 2>/dev/null || echo "未知")
           echo "✅ Xray 已启动，出口IP：$IP"
+          if [ "$IP" = "未知" ]; then
+              echo "⚠️ 代理测试失败，请检查节点是否可用或查看 xray.log"
+          fi
 
-      # ---------- 后续步骤保持不变 ----------
+      # ---------- 后续步骤（保持不变） ----------
       - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
