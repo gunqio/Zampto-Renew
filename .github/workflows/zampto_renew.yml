@@ -44,7 +44,7 @@ jobs:
           pip install seleniumbase
           seleniumbase install chromedriver
 
-      # ---------- 替换后的代理启动步骤 ----------
+      # ---------- 代理启动步骤（修复版） ----------
       - name: 🚀 启动 Xray 代理（链接/JSON 全自动解析）
         if: ${{ env.PROXY_LINK != '' }}
         env:
@@ -60,136 +60,145 @@ jobs:
           unzip -q Xray-linux-64.zip
           chmod +x xray
 
-          # 2. 生成基础 config.json（入站 http 代理 + 出站占位）
-          cat > config.json << 'EOF'
-          {
-            "log": { "loglevel": "warning" },
-            "inbounds": [
-              { "port": 8080, "protocol": "http", "settings": {} }
-            ],
-            "outbounds": [ { "protocol": "proxy", "settings": {} } ]
+          # 2. 使用 Python 统一解析并生成 config.json（包含入站和出站）
+          python3 << 'PYTHON'
+          import os, sys, json, base64, urllib.parse
+
+          link = os.getenv("PROXY_LINK", "").strip()
+          if not link:
+              sys.exit(0)
+
+          # 默认入站配置
+          config = {
+              "log": { "loglevel": "warning" },
+              "inbounds": [
+                  { "port": 8080, "protocol": "http", "settings": {} }
+              ]
           }
-          EOF
 
-          # 3. 解析 PROXY_LINK
-          if echo "$PROXY_LINK" | grep -q '^vmess://'; then
-            echo "🔮 解析 vmess:// 链接"
-            B64=$(echo "$PROXY_LINK" | sed 's/^vmess:\/\///' | tr -d '\n')
-            while [ $((${#B64} % 4)) -ne 0 ]; do B64="${B64}="; done
-            JSON=$(echo "$B64" | base64 -d 2>/dev/null || echo '{}')
-            ADD=$(echo "$JSON" | jq -r '.add // ""')
-            PORT=$(echo "$JSON" | jq -r '.port // "443"')
-            ID=$(echo "$JSON" | jq -r '.id // ""')
-            AID=$(echo "$JSON" | jq -r '.aid // "0"')
-            NET=$(echo "$JSON" | jq -r '.net // "tcp"')
-            TLS=$(echo "$JSON" | jq -r '.tls // ""')
-            PATH=$(echo "$JSON" | jq -r '.path // "/"')
-            HOST=$(echo "$JSON" | jq -r '.host // ""')
-            cat > outbound.json << EOF
-            {
-              "protocol": "vmess",
-              "settings": {
-                "vnext": [{
-                  "address": "$ADD",
-                  "port": $PORT,
-                  "users": [{
-                    "id": "$ID",
-                    "alterId": $AID,
-                    "security": "auto"
-                  }]
-                }]
-              },
-              "streamSettings": {
-                "network": "$NET",
-                "security": "$TLS",
-                "tlsSettings": $( [ "$TLS" == "tls" ] && echo '{"allowInsecure": true}' || echo '{}' ),
-                "wsSettings": $( [ "$NET" == "ws" ] && echo "{\"path\":\"$PATH\",\"headers\":{\"Host\":\"$HOST\"}}" || echo '{}' )
+          # 解析出站
+          outbound = None
+
+          if link.startswith("vmess://"):
+              print("🔮 解析 vmess:// 链接")
+              b64 = link[8:].replace("\n", "").replace("\r", "")
+              while len(b64) % 4 != 0:
+                  b64 += "="
+              try:
+                  data = json.loads(base64.b64decode(b64).decode('utf-8'))
+              except:
+                  print("❌ vmess 解析失败")
+                  sys.exit(1)
+              outbound = {
+                  "protocol": "vmess",
+                  "settings": {
+                      "vnext": [{
+                          "address": data.get("add", ""),
+                          "port": int(data.get("port", 443)),
+                          "users": [{
+                              "id": data.get("id", ""),
+                              "alterId": int(data.get("aid", 0)),
+                              "security": data.get("scy", "auto") or "auto"
+                          }]
+                      }]
+                  },
+                  "streamSettings": {
+                      "network": data.get("net", "tcp"),
+                      "security": data.get("tls", ""),
+                      "tlsSettings": {"allowInsecure": True} if data.get("tls") == "tls" else {},
+                      "wsSettings": {"path": data.get("path", "/"), "headers": {"Host": data.get("host", "")}} if data.get("net") == "ws" else {},
+                      "httpSettings": {"path": data.get("path", "/")} if data.get("net") == "http" else {},
+                      "grpcSettings": {"serviceName": data.get("path", "")} if data.get("net") == "grpc" else {}
+                  }
               }
-            }
-            EOF
 
-          elif echo "$PROXY_LINK" | grep -q '^vless://'; then
-            echo "🔮 解析 vless:// 链接"
-            python3 << 'PY'
-            import os, sys, json, urllib.parse
-            link = os.getenv("PROXY_LINK")
-            if not link: sys.exit(0)
-            u = urllib.parse.urlparse(link)
-            params = dict(urllib.parse.parse_qsl(u.query))
-            out = {
-              "protocol": "vless",
-              "settings": {
-                "vnext": [{
-                  "address": u.hostname,
-                  "port": u.port or 443,
-                  "users": [{
-                    "id": u.username,
-                    "encryption": params.get("encryption", "none"),
-                    "flow": params.get("flow", "")
-                  }]
-                }]
-              },
-              "streamSettings": {
-                "network": params.get("type", "tcp"),
-                "security": params.get("security", ""),
-                "tlsSettings": {"allowInsecure": True} if params.get("security") == "tls" else {},
-                "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {}
+          elif link.startswith("vless://"):
+              print("🔮 解析 vless:// 链接")
+              u = urllib.parse.urlparse(link)
+              params = dict(urllib.parse.parse_qsl(u.query))
+              outbound = {
+                  "protocol": "vless",
+                  "settings": {
+                      "vnext": [{
+                          "address": u.hostname,
+                          "port": u.port or 443,
+                          "users": [{
+                              "id": u.username,
+                              "encryption": params.get("encryption", "none"),
+                              "flow": params.get("flow", "")
+                          }]
+                      }]
+                  },
+                  "streamSettings": {
+                      "network": params.get("type", "tcp"),
+                      "security": params.get("security", ""),
+                      "tlsSettings": {"allowInsecure": True} if params.get("security") == "tls" else {},
+                      "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {},
+                      "httpSettings": {"path": params.get("path", "/")} if params.get("type") == "http" else {},
+                      "grpcSettings": {"serviceName": params.get("serviceName", "")} if params.get("type") == "grpc" else {}
+                  }
               }
-            }
-            with open("outbound.json", "w") as f:
-                json.dump(out, f, indent=2)
-            PY
 
-          elif echo "$PROXY_LINK" | grep -q '^trojan://'; then
-            echo "🔮 解析 trojan:// 链接"
-            python3 << 'PY'
-            import os, sys, json, urllib.parse
-            link = os.getenv("PROXY_LINK")
-            if not link: sys.exit(0)
-            u = urllib.parse.urlparse(link)
-            params = dict(urllib.parse.parse_qsl(u.query))
-            out = {
-              "protocol": "trojan",
-              "settings": {
-                "servers": [{
-                  "address": u.hostname,
-                  "port": u.port or 443,
-                  "password": u.username,
-                  "flow": params.get("flow", "")
-                }]
-              },
-              "streamSettings": {
-                "network": params.get("type", "tcp"),
-                "security": params.get("security", "tls"),
-                "tlsSettings": {"allowInsecure": True} if params.get("allowInsecure") == "1" else {},
-                "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {}
+          elif link.startswith("trojan://"):
+              print("🔮 解析 trojan:// 链接")
+              u = urllib.parse.urlparse(link)
+              params = dict(urllib.parse.parse_qsl(u.query))
+              outbound = {
+                  "protocol": "trojan",
+                  "settings": {
+                      "servers": [{
+                          "address": u.hostname,
+                          "port": u.port or 443,
+                          "password": u.username,
+                          "flow": params.get("flow", "")
+                      }]
+                  },
+                  "streamSettings": {
+                      "network": params.get("type", "tcp"),
+                      "security": params.get("security", "tls"),
+                      "tlsSettings": {"allowInsecure": True} if params.get("allowInsecure") == "1" else {},
+                      "wsSettings": {"path": params.get("path", "/"), "headers": {"Host": params.get("host", "")}} if params.get("type") == "ws" else {},
+                      "httpSettings": {"path": params.get("path", "/")} if params.get("type") == "http" else {},
+                      "grpcSettings": {"serviceName": params.get("serviceName", "")} if params.get("type") == "grpc" else {}
+                  }
               }
-            }
-            with open("outbound.json", "w") as f:
-                json.dump(out, f, indent=2)
-            PY
 
-          elif echo "$PROXY_LINK" | grep -q '^{'; then
-            echo "📄 检测到 JSON 配置，直接覆盖"
-            echo "$PROXY_LINK" > config.json
-            touch outbound.json
-          else
-            echo "❌ 无法识别的代理格式"
-            exit 1
-          fi
+          elif link.startswith("{"):
+              # 直接使用用户提供的完整 JSON 配置
+              try:
+                  config = json.loads(link)
+                  # 确保入站端口为 8080
+                  if "inbounds" in config:
+                      for inbound in config["inbounds"]:
+                          if inbound.get("protocol") == "http":
+                              inbound["port"] = 8080
+                  print("📄 使用用户提供的 JSON 配置")
+                  with open("config.json", "w") as f:
+                      json.dump(config, f, indent=2)
+                  sys.exit(0)
+              except:
+                  print("❌ JSON 配置解析失败")
+                  sys.exit(1)
 
-          # 如果生成了 outbound.json，则合并到 config.json
-          if [ -f outbound.json ]; then
-            jq --slurpfile out outbound.json \
-               '.inbounds = [{"port":8080,"protocol":"http","settings":{}}] | .outbounds = $out[0]' \
-               config.json > config.tmp && mv config.tmp config.json
-          fi
+          else:
+              print("❌ 无法识别的代理格式")
+              sys.exit(1)
 
-          # 4. 启动 Xray
+          # 如果有出站，则合并到 config
+          if outbound:
+              config["outbounds"] = [outbound]
+              print("✅ 代理配置解析成功")
+
+          # 写入 config.json
+          with open("config.json", "w") as f:
+              json.dump(config, f, indent=2)
+          PYTHON
+
+          # 3. 启动 Xray
           nohup ./xray -c config.json > xray.log 2>&1 &
           sleep 3
 
-          # 5. 测试代理
+          # 4. 测试代理
           IP=$(curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "未知")
           echo "✅ Xray 已启动，出口IP：$IP"
 
