@@ -21,7 +21,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: gunqio/zhiyong              # ← 已修改
+          repository: gunqio/zhiyong
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
@@ -36,25 +36,64 @@ jobs:
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y xvfb xdotool
+          sudo apt-get install -y xvfb xdotool unzip
 
       - name: 🐍 安装 Python 依赖
         run: pip install seleniumbase requests
 
-      - name: 🛡️ 启动 GOST 代理转发
-        env:
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
-        if: env.GOST_PROXY != ''
+      - name: 🛡️ 启动 Xray 代理转发 (解析 vmess 原生住宅节点)
         run: |
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
-          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
-          chmod +x gost
-          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
-          sleep 3
-          echo "✅ GOST 已启动，测试连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org \
-            | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
+          # 1. 下载并解压 Xray 核心
+          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -q xray.zip
+          chmod +x xray
+          
+          # 2. 生成匹配你法国住宅节点的专用 config.json
+          cat << 'EOF' > config.json
+          {
+            "inbounds": [{
+              "port": 10809,
+              "protocol": "http",
+              "listen": "127.0.0.1"
+            }],
+            "outbounds": [{
+              "protocol": "vmess",
+              "settings": {
+                "vnext": [{
+                  "address": "saas.sin.fan",
+                  "port": 443,
+                  "users": [{
+                    "id": "42e35455-abdb-4b51-830e-7a4e24e50a81",
+                    "alterId": 0,
+                    "security": "none"
+                  }]
+                }]
+              },
+              "streamSettings": {
+                "network": "ws",
+                "security": "tls",
+                "tlsSettings": {
+                  "serverName": "ministrator.koko.xx.kg",
+                  "allowInsecure": false
+                },
+                "wsSettings": {
+                  "path": "/vmess-argo?ed=2560",
+                  "headers": {
+                    "Host": "ministrator.koko.xx.kg"
+                  }
+                }
+              }
+            }]
+          }
+          EOF
+          
+          # 3. 后台静默启动 Xray 并留出建连时间
+          nohup ./xray -config config.json > xray.log 2>&1 &
+          sleep 4
+          
+          # 4. 测试住宅 IP 的本地通道连通性
+          echo "✅ Xray 代理已在本地 10809 端口启动，正在测试出口 IP..."
+          curl -s -x http://127.0.0.1:10809 https://api.ipify.org || echo "⚠️ 连通测试失败，请检查节点可用性"
 
       - name: 🚀 运行续期脚本
         env:
@@ -63,6 +102,8 @@ jobs:
           ZAMPTO_PASS: ${{ secrets.ZAMPTO_PASS }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
+          HTTP_PROXY: http://127.0.0.1:10809
+          http_proxy: http://127.0.0.1:10809
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
