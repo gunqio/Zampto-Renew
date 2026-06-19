@@ -43,7 +43,6 @@ jobs:
 
       - name: 🛡️ 启动 Xray 代理转发 (链接/JSON 智能全自动解析)
         env:
-          # 只需在 GitHub Secrets 里创建 VMESS_LINK，把整个 vmess://... 或 JSON 贴进去
           RAW_VMESS_DATA: ${{ secrets.VMESS_LINK }}
         run: |
           if [ -z "${RAW_VMESS_DATA}" ]; then
@@ -133,8 +132,10 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
           HTTP_PROXY: http://127.0.0.1:10809
-          http_proxy: http://127.0.0.1:10809
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
+        run: |
+          # 在执行阶段同时导出大小写代理，规避 YAML 文件的同名检查限制
+          export http_proxy=http://127.0.0.1:10809
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
         if: always()
