@@ -21,7 +21,7 @@ jobs:
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: acwea904/Zampto-Renew-Private
+          repository: gunqio/zhiyong              # ← 已修改
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
@@ -86,7 +86,6 @@ jobs:
           if git diff --cached --quiet; then 
             echo "无变化，无需提交"
           else 
-            # Commit 附带北京时间
             git commit -m "⏱️ 更新时间文件: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
             git pull --rebase origin main
             git push origin HEAD:main
