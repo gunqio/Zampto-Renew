@@ -3,7 +3,7 @@ name: Zampto-Renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: '40 7 * * *'   # 北京时间 09:00（UTC+8 → UTC 01:00）
+    - cron: '0 1 * * *'   # 每天北京时间上午 9:00 运行 (UTC 1:00)
 
 jobs:
   run_zampto_renew:
@@ -11,136 +11,79 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: 📥 下载公库代码（此处为你的工作流仓库本身）
+        uses: actions/checkout@v4
+
+      # ========== 修改点：拉取你的私有脚本仓库 ==========
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
-          repository: gunqio/zhiyong
+          repository: gunqio/zhiyong          # ← 修改为你的私库地址
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
+          ref: main                           # ← 如果脚本不在 main 分支，请修改此处
+        # 如果脚本在仓库子目录（如 src/），请在下一步调整路径
+      # ================================================
 
-      - name: 📂 移动脚本到工作目录
-        run: mv private/zampto_renew.py zampto_renew.py
+      - name: 📂 移动脚本
+        run: |
+          # 假设脚本在私库根目录；若在子目录，请修改为例如 mv private/src/zampto_renew.py zampto_renew.py
+          mv private/zampto_renew.py zampto_renew.py
 
       - name: 🐍 设置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
-      - name: 🛠️ 安装系统依赖
+      - name: 🛠️ 安装系统与 Python 依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            google-chrome-stable \
-            xvfb \
-            x11-utils \
-            scrot \
-            xdotool \
-            jq \
-            wget \
-            unzip
-
-      - name: 🐍 安装 Python 依赖
-        run: |
-          pip install seleniumbase
+          sudo apt-get install -y google-chrome-stable xvfb x11-utils xdotool
+          pip install seleniumbase requests
           seleniumbase install chromedriver
 
-      # ---------- 替换为旧版正常的 Xray 代理步骤 ----------
-      - name: 🛡️ 启动 Xray 代理转发 (链接/JSON 智能全自动解析)
+      - name: 🛡️ 启动 Xray 代理转发
         env:
-          VMESS_LINK: ${{ secrets.VMESS_LINK }}
+          XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
         run: |
-          if [ -z "${VMESS_LINK}" ]; then
-            echo "❌ 错误：GitHub Secrets 中缺少 VMESS_LINK 配置！"
-            exit 1
-          fi
-
-          # 1. 智能判定是 vmess:// 还是原生 JSON
-          if [[ "${VMESS_LINK}" == vmess://* ]]; then
-            echo "🔮 检测到 vmess:// 协议链接，开始进行 Base64 解码..."
-            CLEAN_B64=$(echo "${VMESS_LINK}" | sed 's/vmess:\/\///' | tr -d '\r\n ')
-            JSON_STR=$(echo "${CLEAN_B64}" | base64 -d 2>/dev/null || echo "${CLEAN_B64}=" | base64 -d 2>/dev/null || echo "${CLEAN_B64}==" | base64 -d 2>/dev/null)
+          if [ -z "$XRAY_CONFIG" ]; then
+            echo "未配置 XRAY_CONFIG，跳过 Xray 代理启动"
           else
-            echo "📄 检测到原生 JSON 文本，直接提取参数..."
-            JSON_STR="${VMESS_LINK}"
+            echo "📦 正在下载并配置 Xray..."
+            wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+            unzip -q Xray-linux-64.zip -d xray_bin
+            chmod +x xray_bin/xray
+            
+            echo "$XRAY_CONFIG" > xray_bin/config.json
+            
+            nohup ./xray_bin/xray run -c ./xray_bin/config.json > xray.log 2>&1 &
+            sleep 4
+            
+            echo "🌐 测试通过代理获取的出口 IP:"
+            curl -s -x socks5h://127.0.0.1:10808 https://api.ipify.org || echo "⚠️ 代理测试超时或失败，但将继续执行"
+            echo -e "\n✅ Xray 代理服务已就绪"
           fi
 
-          # 验证 JSON 解析是否合法
-          if ! echo "${JSON_STR}" | jq . >/dev/null 2>&1; then
-            echo "❌ 错误：节点数据解码失败或 JSON 格式不合法！"
-            exit 1
-          fi
-
-          # 2. 提取 Xray 所需的核心变量
-          V_ADD=$(echo "${JSON_STR}" | jq -r '.add')
-          V_PORT=$(echo "${JSON_STR}" | jq -r '.port')
-          V_ID=$(echo "${JSON_STR}" | jq -r '.id')
-          V_HOST=$(echo "${JSON_STR}" | jq -r '.host // .sni')
-          V_PATH=$(echo "${JSON_STR}" | jq -r '.path')
-
-          # 3. 下载并解压 Xray 核心
-          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q xray.zip && chmod +x xray
-          
-          # 4. 生成 Xray 标准 config.json
-          cat << EOF > config.json
-          {
-            "inbounds": [{
-              "port": 10809,
-              "protocol": "http",
-              "listen": "127.0.0.1"
-            }],
-            "outbounds": [{
-              "protocol": "vmess",
-              "settings": {
-                "vnext": [{
-                  "address": "${V_ADD}",
-                  "port": ${V_PORT:-443},
-                  "users": [{
-                    "id": "${V_ID}",
-                    "alterId": 0,
-                    "security": "none"
-                  }]
-                }]
-              },
-              "streamSettings": {
-                "network": "ws",
-                "security": "tls",
-                "tlsSettings": {
-                  "serverName": "${V_HOST}",
-                  "allowInsecure": false
-                },
-                "wsSettings": {
-                  "path": "${V_PATH}",
-                  "headers": {
-                    "Host": "${V_HOST}"
-                  }
-                }
-              }
-            }]
-          }
-          EOF
-          
-          # 5. 后台静默启动 Xray
-          nohup ./xray -config config.json > xray.log 2>&1 &
-          sleep 4
-          
-          # 6. 测试连通性
-          echo "✅ Xray 代理已在本地 10809 端口启动，正在测试出口 IP..."
-          curl -s -x http://127.0.0.1:10809 https://api.ipify.org || echo "⚠️ 连通测试失败，请确认节点是否有效"
-
-      # ---------- 后续步骤保持不变 ----------
       - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
           ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
           TG_BOT: ${{ secrets.TG_BOT }}
+          XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
         run: |
+          if [ -n "$XRAY_CONFIG" ]; then
+            export USE_PROXY="true"
+            echo "🌐 代理已激活，准备通过节点续期..."
+          else
+            export USE_PROXY="false"
+            echo "⚠️ 未使用代理模式"
+          fi
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots-${{ github.run_id }}
+          name: debug-screenshots
           path: "*.png"
           retention-days: 3
