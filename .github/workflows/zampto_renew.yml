@@ -3,7 +3,7 @@ name: Zampto-Renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 1 * * *'
+    - cron: '0 1 * * *'   # 北京时间09:00
 
 jobs:
   run_zampto_renew:
@@ -11,18 +11,15 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: 📥 下载公库代码
-        uses: actions/checkout@v4
-
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
           repository: gunqio/zhiyong
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: private
           ref: main
+          path: private
 
-      - name: 📂 移动脚本
+      - name: 📂 移动脚本到工作目录
         run: |
           mv private/zampto_renew.py zampto_renew.py
 
@@ -31,140 +28,80 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: 🛠️ 安装系统与 Python 依赖
+      - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
             google-chrome-stable \
             xvfb \
             x11-utils \
-            xdotool \
-            unzip \
-            jq
+            scrot
 
+      - name: 🐍 安装 Python 依赖
+        run: |
           python -m pip install --upgrade pip
           pip install seleniumbase requests
           seleniumbase install chromedriver
 
-      - name: 🛡️ 启动 Xray
-        shell: bash
+      - name: 🛡️ 启动 GOST 代理转发
+        if: ${{ env.GOST_PROXY != '' }}
         env:
-          XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
+          GOST_PROXY: ${{ secrets.GOST_PROXY }}
         run: |
-          set -e
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest \
+            | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
 
-          if [ -z "$XRAY_CONFIG" ]; then
-            echo "❌ 未配置 XRAY_CONFIG"
-            exit 1
+          echo "📦 GOST Version: $VERSION"
+
+          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
+
+          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
+
+          chmod +x gost
+
+          nohup ./gost \
+            -L http://:8080 \
+            -F "$GOST_PROXY" \
+            > gost.log 2>&1 &
+
+          sleep 3
+
+          IP=$(curl -s -x http://127.0.0.1:8080 https://api.ipify.org || true)
+
+          if [ -n "$IP" ]; then
+            IP_MASKED=$(echo "$IP" | sed 's/\([0-9]*\.[0-9]*\.[0-9]*\.\)[0-9]*/\1xx/')
+            echo "✅ GOST 已启动"
+            echo "🌐 出口 IP：$IP_MASKED"
+          else
+            echo "⚠️ GOST 已启动，但代理测试失败"
+            cat gost.log || true
           fi
 
-          echo "📦 下载 Xray..."
-
-          wget -q \
-            https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-
-          unzip -qo Xray-linux-64.zip -d xray_bin
-
-          chmod +x xray_bin/xray
-
-          echo "$XRAY_CONFIG" > xray_bin/config.json
-
-          echo "========== 验证 JSON =========="
-          jq . xray_bin/config.json
-
-          echo "========== 启动 Xray =========="
-
-          nohup ./xray_bin/xray run \
-            -c xray_bin/config.json \
-            > xray.log 2>&1 &
-
-          sleep 5
-
-          echo
-          echo "========== Xray 日志 =========="
-          cat xray.log || true
-
-          echo
-          echo "========== Xray 进程 =========="
-          ps -ef | grep "[x]ray" || true
-
-          echo
-          echo "========== 监听端口 =========="
-          ss -lntp || true
-
-          echo
-          echo "========== SOCKS5 测试 =========="
-
-          OK=0
-
-          for i in $(seq 1 10); do
-
-            echo "第 ${i} 次..."
-
-            if curl \
-              --silent \
-              --show-error \
-              --connect-timeout 10 \
-              --max-time 15 \
-              -x socks5h://127.0.0.1:10808 \
-              https://api.ipify.org; then
-
-              echo
-              echo "✅ SOCKS5 正常"
-
-              OK=1
-
-              break
-            fi
-
-            sleep 2
-
-          done
-
-          if [ "$OK" != "1" ]; then
-
-            echo
-            echo "❌ Xray 启动失败"
-
-            echo
-            echo "========== xray.log =========="
-
-            cat xray.log || true
-
-            exit 1
-
-          fi
-
-      - name: 🚀 运行 Zampto 自动续期
+      - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
           ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
+          GOST_PROXY: ${{ secrets.GOST_PROXY }}
           TG_BOT: ${{ secrets.TG_BOT }}
-          XRAY_CONFIG: ${{ secrets.XRAY_CONFIG }}
         run: |
-          export USE_PROXY=true
-
-          echo "🌐 使用 Xray SOCKS5"
-
           xvfb-run \
             --auto-servernum \
             --server-args="-screen 0 1920x1080x24" \
             python zampto_renew.py
 
-      - name: 📸 上传截图
+      - name: 📄 上传 GOST 日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots
-          path: "*.png"
+          name: gost-log-${{ github.run_id }}
+          path: |
+            gost.log
           retention-days: 3
 
-      - name: 📄 上传 Xray 日志
+      - name: 📸 上传调试截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xray-log
-          path: |
-            xray.log
-            xray_bin/config.json
+          name: debug-screenshots-${{ github.run_id }}
+          path: "*.png"
           retention-days: 3
