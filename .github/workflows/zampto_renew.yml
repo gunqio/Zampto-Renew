@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 1 * * *'   # 北京时间09:00
 
+permissions:
+  contents: read
+
 jobs:
   run_zampto_renew:
     runs-on: ubuntu-latest
@@ -21,7 +24,13 @@ jobs:
 
       - name: 📂 移动脚本到工作目录
         run: |
-          mv private/zampto_renew.py zampto_renew.py
+          if [ -f private/zampto_renew.py ]; then
+            mv private/zampto_renew.py zampto_renew.py
+          else
+            echo "ERROR: private/zampto_renew.py not found"
+            ls -la private || true
+            exit 1
+          fi
 
       - name: 🐍 设置 Python
         uses: actions/setup-python@v5
@@ -35,7 +44,9 @@ jobs:
             google-chrome-stable \
             xvfb \
             x11-utils \
-            scrot
+            scrot \
+            wget \
+            ca-certificates
 
       - name: 🐍 安装 Python 依赖
         run: |
@@ -44,7 +55,7 @@ jobs:
           seleniumbase install chromedriver
 
       - name: 🛡️ 启动 GOST 代理转发
-        if: ${{ env.GOST_PROXY != '' }}
+        if: ${{ secrets.GOST_PROXY != '' }}
         env:
           GOST_PROXY: ${{ secrets.GOST_PROXY }}
         run: |
@@ -54,9 +65,7 @@ jobs:
           echo "📦 GOST Version: $VERSION"
 
           wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
-
           tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
-
           chmod +x gost
 
           nohup ./gost \
@@ -81,21 +90,24 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
+          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASSWORD }}
           GOST_PROXY: ${{ secrets.GOST_PROXY }}
           TG_BOT: ${{ secrets.TG_BOT }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           xvfb-run \
             --auto-servernum \
             --server-args="-screen 0 1920x1080x24" \
-            python zampto_renew.py
+            python zampto_renew.py 2>&1 | tee zampto_renew.log
 
-      - name: 📄 上传 GOST 日志
+      - name: 📄 上传日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gost-log-${{ github.run_id }}
+          name: runtime-logs-${{ github.run_id }}
           path: |
             gost.log
+            zampto_renew.log
           retention-days: 3
 
       - name: 📸 上传调试截图
@@ -103,5 +115,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots-${{ github.run_id }}
-          path: "*.png"
+          path: |
+            screenshots/*.png
           retention-days: 3
