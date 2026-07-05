@@ -41,7 +41,6 @@ jobs:
       - name: 🐍 安装 Python 依赖
         run: pip install seleniumbase requests
 
-      # ----- 新增：启动 VLESS 代理（基于 Xray-core） -----
       - name: 🛡️ 启动 VLESS 代理（可选）
         env:
           VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
@@ -51,20 +50,17 @@ jobs:
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip -q Xray-linux-64.zip
           chmod +x xray
-          
+
           echo "📝 写入 VLESS 配置..."
           echo "$VLESS_CONFIG" > config.json
-          
+
           echo "🚀 启动 Xray（监听 127.0.0.1:1080）..."
           nohup ./xray -c config.json > xray.log 2>&1 &
           sleep 5
-          
+
           echo "🌐 测试代理连通性（SOCKS5）..."
           curl -s -x socks5h://127.0.0.1:1080 https://api.ipify.org \
             | sed 's/\([0-9]*\)\..*/\1.*.*.*/' || echo "⚠️ 代理测试失败，请检查配置"
-          
-          # 将代理地址写入环境文件，供后续步骤使用
-          echo "PROXY=socks5://127.0.0.1:1080" >> $GITHUB_ENV
 
       - name: 🚀 运行续期脚本
         env:
@@ -73,11 +69,8 @@ jobs:
           ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASS }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
-          # 代理地址从环境变量获取（若 VLESS 启动则存在）
-          PROXY: ${{ env.PROXY }}
-          # 可选：设置 HTTP_PROXY 和 HTTPS_PROXY 以便其他工具使用
-          HTTP_PROXY: ${{ env.PROXY }}
-          HTTPS_PROXY: ${{ env.PROXY }}
+          # 仅设置 PROXY，不设置 HTTP_PROXY/HTTPS_PROXY
+          PROXY: socks5://127.0.0.1:1080
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
