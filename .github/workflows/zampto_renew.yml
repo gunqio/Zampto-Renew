@@ -43,7 +43,7 @@ jobs:
           pip install --upgrade pip
           pip install --upgrade seleniumbase requests
 
-      - name: 🛡️ 启动 VLESS 代理（Xray-core）
+      - name: 🛡️ 启动 Xray 代理（自适应 VLESS/VMess）
         env:
           VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
         if: env.VLESS_CONFIG != ''
@@ -53,16 +53,24 @@ jobs:
           unzip -q Xray-linux-64.zip
           chmod +x xray
 
-          echo "📝 写入 VLESS 配置..."
+          echo "📝 写入内核配置文件..."
           echo "$VLESS_CONFIG" > config.json
 
-          echo "🚀 启动 Xray（监听 127.0.0.1:1080）..."
+          echo "🚀 启动 Xray 核心守护进程（监听 127.0.0.1:1080）..."
           nohup ./xray -c config.json > xray.log 2>&1 &
           sleep 5
 
-          echo "🌐 测试代理连通性（SOCKS5）..."
-          curl -s -x socks5h://127.0.0.1:1080 https://api.ipify.org \
-            | sed 's/\([0-9]*\)\..*/\1.*.*.*/' || echo "⚠️ 代理测试失败"
+          echo "🌐 测试代理连通性..."
+          # 增加 12 秒强行超时，防止握手失败时工作流无限制 Hang 住
+          if curl -s --max-time 12 -x socks5://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
+            echo "✅ 代理网路已打通！出口 IP 掩码处理为："
+            cat ip_res.txt | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
+          else
+            echo "❌ 代理连接失败或发生握手超时！"
+            echo "📄 正在输出 xray.log 核心日志分析原因："
+            cat xray.log
+            exit 1
+          fi
 
       - name: 🚀 运行续期脚本
         env:
