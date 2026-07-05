@@ -36,25 +36,35 @@ jobs:
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y xvfb xdotool
+          sudo apt-get install -y xvfb xdotool unzip
 
       - name: 🐍 安装 Python 依赖
         run: pip install seleniumbase requests
 
-      - name: 🛡️ 启动 GOST 代理转发（可选）
+      # ----- 新增：启动 VLESS 代理（基于 Xray-core） -----
+      - name: 🛡️ 启动 VLESS 代理（可选）
         env:
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
-        if: env.GOST_PROXY != ''
+          VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
+        if: env.VLESS_CONFIG != ''
         run: |
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
-          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
-          chmod +x gost
-          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
-          sleep 3
-          echo "✅ GOST 已启动，测试连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org \
-            | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
+          echo "📦 下载 Xray-core..."
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -q Xray-linux-64.zip
+          chmod +x xray
+          
+          echo "📝 写入 VLESS 配置..."
+          echo "$VLESS_CONFIG" > config.json
+          
+          echo "🚀 启动 Xray（监听 127.0.0.1:1080）..."
+          nohup ./xray -c config.json > xray.log 2>&1 &
+          sleep 5
+          
+          echo "🌐 测试代理连通性（SOCKS5）..."
+          curl -s -x socks5h://127.0.0.1:1080 https://api.ipify.org \
+            | sed 's/\([0-9]*\)\..*/\1.*.*.*/' || echo "⚠️ 代理测试失败，请检查配置"
+          
+          # 将代理地址写入环境文件，供后续步骤使用
+          echo "PROXY=socks5://127.0.0.1:1080" >> $GITHUB_ENV
 
       - name: 🚀 运行续期脚本
         env:
@@ -63,7 +73,11 @@ jobs:
           ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASS }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
+          # 代理地址从环境变量获取（若 VLESS 启动则存在）
+          PROXY: ${{ env.PROXY }}
+          # 可选：设置 HTTP_PROXY 和 HTTPS_PROXY 以便其他工具使用
+          HTTP_PROXY: ${{ env.PROXY }}
+          HTTPS_PROXY: ${{ env.PROXY }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
@@ -80,9 +94,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
           echo "最新运行时间：$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" > time.txt
-          
           git add time.txt
           if git diff --cached --quiet; then 
             echo "无变化，无需提交"
