@@ -38,8 +38,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y xvfb xdotool unzip
 
-      - name: 🐍 安装 Python 依赖
-        run: pip install seleniumbase requests
+      - name: 🐍 安装 Python 依赖（含升级）
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade seleniumbase requests
 
       - name: 🛡️ 启动 VLESS 代理（可选）
         env:
@@ -50,17 +52,12 @@ jobs:
           wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip -q Xray-linux-64.zip
           chmod +x xray
-
-          echo "📝 写入 VLESS 配置..."
           echo "$VLESS_CONFIG" > config.json
-
-          echo "🚀 启动 Xray（监听 127.0.0.1:1080）..."
           nohup ./xray -c config.json > xray.log 2>&1 &
           sleep 5
-
           echo "🌐 测试代理连通性（SOCKS5）..."
           curl -s -x socks5h://127.0.0.1:1080 https://api.ipify.org \
-            | sed 's/\([0-9]*\)\..*/\1.*.*.*/' || echo "⚠️ 代理测试失败，请检查配置"
+            | sed 's/\([0-9]*\)\..*/\1.*.*.*/' || echo "⚠️ 代理测试失败"
 
       - name: 🚀 运行续期脚本
         env:
@@ -69,8 +66,7 @@ jobs:
           ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASS }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
-          # 仅设置 PROXY，不设置 HTTP_PROXY/HTTPS_PROXY
-          PROXY: socks5://127.0.0.1:1080
+          PROXY: socks5://127.0.0.1:1080   # 若没有代理可不设置
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
