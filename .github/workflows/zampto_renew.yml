@@ -2,8 +2,8 @@ name: Zampto 续期
 
 on:
   schedule:
-    - cron: '47 0 * * *'
-  workflow_dispatch:
+    - cron: '47 0 * * *'          # 每天 00:47 UTC 运行
+  workflow_dispatch:               # 允许手动触发
 
 jobs:
   renew:
@@ -13,16 +13,16 @@ jobs:
       contents: read
       actions: write
     concurrency:
-      group: Zampto_Renew       # 同一时间只允许一个运行
+      group: Zampto_Renew
       cancel-in-progress: false
 
     steps:
       - name: 拉取私有仓库
         uses: actions/checkout@v4
         with:
-          repository: gunqio/zhiyong
+          repository: gunqio/zhiyong    # 替换为您的仓库
           token: ${{ secrets.REPO_TOKEN }}
-          path: .  # 拉到根目录
+          path: .                        # 拉到根目录
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -33,12 +33,14 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y xvfb unzip
           pip install "seleniumbase>=4.25.0" "pyvirtualdisplay>=3.0" "requests>=2.31.0"
+
       - name: 修复 DNS
         run: |
           sudo systemctl stop systemd-resolved 2>/dev/null || true
           sudo systemctl disable systemd-resolved 2>/dev/null || true
           sudo rm -f /etc/resolv.conf
           printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1\n" | sudo tee /etc/resolv.conf
+
       - name: 安装并启动代理
         env:
           ZAMPTO_PROXY_NODE: ${{ secrets.ZAMPTO_PROXY_NODE }}
@@ -196,7 +198,8 @@ jobs:
             cat xray.log
             exit 1
           fi
-      - name: 检查脚本代理出口
+
+      - name: 检查代理出口
         run: |
           if [ -z "${PROXY_SERVER}" ]; then
             echo "[ERROR] PROXY_SERVER 为空，禁止直连"
@@ -208,22 +211,26 @@ jobs:
           echo "[INFO] 出口 IP: ${MASKED_IP}"
           echo "[INFO] 检查代理访问 Zampto..."
           curl -fsSI --max-time 30 --proxy "${PROXY_SERVER}" https://auth.zampto.net/ | sed -n '1,8p'
-      - name: 执行续期
+
+      - name: 执行续期（使用 xvfb）
         env:
           ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_ACCOUNT }}
+          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          ZAMPTO_PROXY_NODE: ${{ env.PROXY_SERVER }}
-        run: python Zampto_Renew.py
-#        > /dev/null 2>&1
+          # 脚本内部使用固定代理 http://127.0.0.1:8080，无需传递
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python Zampto_Renew.py
 
-#      - name: 上传截图
-#        uses: actions/upload-artifact@v4
-#        if: always()
-#        with:
-#          name: screenshots-${{ github.run_number }}
-#          path: output/screenshots/
-#          retention-days: 3
+      - name: 上传调试文件（截图和HTML）
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-${{ github.run_number }}
+          path: |
+            *.png
+            *.html
+          retention-days: 3
 
       - name: 清理旧运行
         uses: Mattraks/delete-workflow-runs@v2
