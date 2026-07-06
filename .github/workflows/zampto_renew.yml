@@ -1,15 +1,23 @@
-name: Witchly-Coins
+name: Zampto-Renew
+
 on:
   workflow_dispatch:
-  
+  schedule:
+    - cron: '0 1 * * *'
+
 permissions:
+  contents: write
   actions: write
-  contents: read
 
 jobs:
-  run_witchly_coins:
+  run_zampto_renew:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
+      - name: 📥 下载公库代码
+        uses: actions/checkout@v4
+
       - name: 📥 下载私库脚本
         uses: actions/checkout@v4
         with:
@@ -17,77 +25,93 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private
 
-      - name: 📂 复制脚本到工作目录
-        run: cp private/witchly_coins.py witchly_coins.py
+      - name: 📂 移动脚本到工作目录
+        run: mv private/Zampto_Renew.py zampto_renew.py
 
       - name: 🐍 设置 Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.x'
 
-      - name: 🛡️ 启动 GOST 代理转发
-        if: ${{ env.GOST_PROXY != '' }}
-        env:
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
+      - name: 🛠️ 安装系统依赖
         run: |
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
-          echo "📦 GOST 版本: $VERSION"
-          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
-          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
-          chmod +x gost
-          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
-          sleep 3
-          echo "✅ GOST 已启动，测试连通性..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/\([0-9]*\.[0-9]*\.\)[0-9]*\.[0-9]*/\1**.**/g'
-          echo ""
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb xdotool unzip
 
-      - name: 🐍 安装 Python 依赖
-        run: pip install requests
+      - name: 🐍 安装 Python 依赖（确保 SeleniumBase 最新）
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade seleniumbase requests
 
-      - name: 🚀 运行脚本
+      - name: 🛡️ 启动 Xray 代理（自适应 VLESS/VMess）
+        env:
+          VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
+        if: env.VLESS_CONFIG != ''
+        run: |
+          echo "📦 下载 Xray-core..."
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -q Xray-linux-64.zip
+          chmod +x xray
+
+          echo "📝 写入内核配置文件..."
+          echo "$VLESS_CONFIG" > config.json
+
+          echo "🚀 启动 Xray 核心守护进程（监听 127.0.0.1:1080）..."
+          nohup ./xray -c config.json > xray.log 2>&1 &
+          sleep 5
+
+          echo "🌐 测试代理连通性..."
+          # 增加 12 秒强行超时，防止握手失败时工作流无限制 Hang 住
+          if curl -s --max-time 12 -x socks5://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
+            echo "✅ 代理网路已打通！出口 IP 掩码处理为："
+            cat ip_res.txt | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
+          else
+            echo "❌ 代理连接失败或发生握手超时！"
+            echo "📄 正在输出 xray.log 核心日志分析原因："
+            cat xray.log
+            exit 1
+          fi
+
+      - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
-          WITCHLY_ACCOUNT: ${{ secrets.WITCHLY_ACCOUNT }}
-          TG_BOT: ${{ secrets.TG_BOT }}
-          CRON_JOB: ${{ secrets.CRON_JOB }}
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
-        run: python witchly_coins.py
+          ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_USER }}
+          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASS }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_ID: ${{ secrets.TG_ID }}
+          PROXY: socks5://127.0.0.1:1080
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
-      - name: 📤 推回私库
+      - name: 📸 上传调试截图
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_id }}
+          path: "*.png"
+          retention-days: 3
+
+      - name: 📝 更新运行时间文件
         env:
-          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd private
-          if ! git diff --quiet; then
-            git config user.email "actions@github.com"
-            git config user.name "GitHub Actions"
-            git add witchly_coins.py
-            git commit -m "🔄 自动更新 session [skip ci]"
-            git push "https://${PRIVATE_REPO_TOKEN}@github.com/gunqio/zhiyong.git" HEAD
-            echo "✅ 推送成功"
-          else
-            echo "ℹ️ 无变更，跳过推送"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "最新运行时间：$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" > time.txt
+          git add time.txt
+          if git diff --cached --quiet; then 
+            echo "无变化，无需提交"
+          else 
+            git commit -m "⏱️ 更新时间文件: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+            git pull --rebase origin main
+            git push origin HEAD:main
           fi
-          
-      - name: 🧽 清理进程和临时文件
-        if: always()
-        run: |
-          pkill -f gost || true
-          pkill -f python || true
-          rm -f gost gost_*.tar.gz gost.log witchly_coins.py
 
-      - name: 🧹 清理旧的工作流运行记录
+      - name: 🧹 清理旧的运行记录
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          runs=$(gh run list --repo ${{ github.repository }} --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
-          count=0
-          for run_id in $runs; do
-            count=$((count + 1))
-            if [ $count -gt 1 ]; then
-              echo "删除运行记录: $run_id"
-              gh run delete $run_id --repo ${{ github.repository }} || true
-            fi
-          done
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          delete_workflow_pattern: ${{ github.workflow }}
+          retain_days: 0
+          keep_minimum_runs: 2
