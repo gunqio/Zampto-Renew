@@ -33,13 +33,10 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: 🛠️ 安装系统依赖（🌟 兼容 Ubuntu 24.04）
+      - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y xvfb xdotool unzip \
-            libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 \
-            libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
-            libcairo2 libasound2t64 fonts-liberation libxshmfence1
+          sudo apt-get install -y xvfb xdotool unzip
 
       - name: 🐍 安装 Python 依赖（确保 SeleniumBase 最新）
         run: |
@@ -64,6 +61,7 @@ jobs:
           sleep 5
 
           echo "🌐 测试代理连通性..."
+          # 增加 12 秒强行超时，防止握手失败时工作流无限制 Hang 住
           if curl -s --max-time 12 -x socks5://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
             echo "✅ 代理网路已打通！出口 IP 掩码处理为："
             cat ip_res.txt | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
@@ -74,7 +72,7 @@ jobs:
             exit 1
           fi
 
-      - name: 🚀 运行续期脚本（🌟 启用 GLX 软件渲染）
+      - name: 🚀 运行续期脚本
         env:
           PYTHONIOENCODING: utf-8
           ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_USER }}
@@ -82,10 +80,7 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
           PROXY: socks5://127.0.0.1:1080
-        run: |
-          xvfb-run --auto-servernum \
-            --server-args="-screen 0 1920x1080x24 -ac +extension GLX +render -noreset" \
-            python zampto_renew.py
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
 
       - name: 📸 上传调试截图
         if: always()
