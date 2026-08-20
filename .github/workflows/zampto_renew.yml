@@ -1,21 +1,24 @@
-name: Zampto-Renew
+name: ZamPTO Auto Renew
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '30 5,17 * * *'
+    # 每4天北京时间上午10点运行一次 (UTC 02:00)
+    - cron: "0 2 */4 * *"
 
-permissions:
-  contents: write
-  actions: write
+  # 允许手动运行
+  workflow_dispatch:
 
 jobs:
-  run_zampto_renew:
+  renew-zampto:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    permissions:
+      actions: write
+      contents: read
+
     steps:
-      - name: 📥 下载公库代码
+      - name: 拉取公共仓库代码
         uses: actions/checkout@v4
 
       - name: 📥 下载私库脚本
@@ -28,91 +31,93 @@ jobs:
       - name: 📂 移动脚本到工作目录
         run: mv private/Zampto_Renew.py zampto_renew.py
 
-      - name: 🐍 设置 Python
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
 
-      - name: 🛠️ 安装系统依赖
+      - name: 安装系统和 Python 依赖
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y xvfb xdotool unzip
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            x11-utils \
+            xdotool \
+            scrot \
+            fonts-noto-cjk \
+            wget \
+            curl
 
-      - name: 🐍 安装 Python 依赖
-        run: |
-          pip install --upgrade pip
-          pip install --upgrade seleniumbase requests
+          python -m pip install --upgrade pip
+          pip install seleniumbase requests
+          seleniumbase install chromedriver
 
-      - name: 🛡️ 启动 Xray 代理（自适应 VLESS/VMess）
+      - name: 设置 sing-box 代理
         env:
-          VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
-        if: env.VLESS_CONFIG != ''
+          NODE_LINK: ${{ secrets.NODE_LINK }}
         run: |
-          echo "📦 下载 Xray-core..."
-          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q Xray-linux-64.zip
-          chmod +x xray
-
-          echo "📝 写入内核配置文件..."
-          echo "$VLESS_CONFIG" > config.json
-
-          echo "🚀 启动 Xray 核心守护进程（监听 127.0.0.1:1080）..."
-          nohup ./xray -c config.json > xray.log 2>&1 &
-          sleep 5
-
-          echo "🌐 测试代理连通性..."
-          if curl -s --max-time 12 -x socks5://127.0.0.1:1080 https://api.ipify.org > ip_res.txt; then
-            echo "✅ 代理网路已打通！出口 IP 掩码处理为："
-            cat ip_res.txt | sed 's/\([0-9]*\)\..*/\1.*.*.*/'
-          else
-            echo "❌ 代理连接失败或发生握手超时！"
-            cat xray.log
+          if [ -z "$NODE_LINK" ]; then
+            echo "错误：未配置 NODE_LINK Secret"
             exit 1
           fi
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
-      - name: 🚀 运行续期脚本
-        env:
-          PYTHONIOENCODING: utf-8
-          ZAMPTO_ACCOUNT: ${{ secrets.ZAMPTO_USER }}
-          ZAMPTO_PASSWORD: ${{ secrets.ZAMPTO_PASS }}
-          ZAMPTO_COOKIES: ${{ secrets.ZAMPTO_COOKIES }}
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_ID: ${{ secrets.TG_ID }}
-          PROXY: socks5://127.0.0.1:1080
-          DISPLAY: ':99'
+      - name: 检查本地代理
         run: |
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python zampto_renew.py
+          echo "正在检查 127.0.0.1:1081..."
+          for i in $(seq 1 15); do
+            if curl --silent --fail --max-time 10 --proxy http://127.0.0.1:1081 https://api.ip.sb/ip; then
+              echo -e "\n代理连接成功"
+              exit 0
+            fi
+            echo "等待代理启动：$i/15"
+            sleep 2
+          done
+          echo "代理连接失败"
+          exit 1
 
-      - name: 📸 上传调试截图
-        if: always()
+      - name: 运行 ZamPTO 续期脚本
+        env:
+          ZAM_PTO_EMAIL: ${{ secrets.ZAM_PTO_EMAIL }}
+          ZAM_PTO_PASSWORD: ${{ secrets.ZAM_PTO_PASSWORD }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          IS_PROXY: "true"
+          PROXY_SERVER: "http://127.0.0.1:1081"
+        run: |
+          xvfb-run \
+            --auto-servernum \
+            --server-args="-screen 0 1920x1080x24" \
+            python3 zampto_renew.py
+
+      - name: 上传错误截图
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots-${{ github.run_id }}
+          name: zampto-error-screenshots
           path: "*.png"
+          if-no-files-found: ignore
           retention-days: 3
 
-      - name: 📝 更新运行时间文件
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "最新运行时间：$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')" > time.txt
-          git add time.txt
-          if git diff --cached --quiet; then 
-            echo "无变化，无需提交"
-          else 
-            git commit -m "⏱️ 更新时间文件: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          fi
-
-      - name: 🧹 清理旧的运行记录
+      - name: 清理旧工作流记录
         if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}
-          retain_days: 0
-          keep_minimum_runs: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list \
+            --workflow="${{ github.workflow }}" \
+            --limit=100 \
+            --json databaseId \
+            --jq '.[].databaseId')
+
+          count=0
+
+          for run_id in $runs; do
+            count=$((count + 1))
+
+            # 保留最新的一次运行记录，删除其余的
+            if [ "$count" -gt 1 ]; then
+              echo "删除运行记录：$run_id"
+              gh run delete "$run_id" || true
+            fi
+          done
